@@ -37,6 +37,8 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     stub("research", {"session_id": "s", "outcome": "ok", "research_path": "r.md"})
     stub("plan", {"outcome": "ok", "plan_path": "p.md", "plan_comment_at": "2026-11-19T10:00:00Z"})
     stub("implement", {"outcome": "ok"})
+    stub("validate", {"outcome": "ok", "base_commit": "abc", "patch": b"\x00diff"})
+    stub("open_pr", {"outcome": "ok"})
     stub("rejected", {"outcome": "rejected"})
     return called
 
@@ -68,14 +70,30 @@ async def resume(db: Path, action: Literal["approve", "reject"]) -> dict[str, An
         return state
 
 
-async def test_approve_resumes_after_a_restart_and_reaches_implement(
+async def test_approve_resumes_after_a_restart_and_reaches_the_pr(
     tmp_path: Path, calls: list[str]
 ) -> None:
     await wait_for_approval(tmp_path / "checkpoints.db")
     assert calls == ["research", "plan"]
     state = await resume(tmp_path / "checkpoints.db", "approve")
-    assert calls == ["research", "plan", "implement"]  # research and plan did not re-run
+    # research and plan did not re-run
+    assert calls == ["research", "plan", "implement", "validate", "open_pr"]
     assert state["decision"]["action"] == "approve" and state["outcome"] == "ok"
+    assert state["patch"] == b"\x00diff"  # the workspace survives the checkpoint as bytes
+
+
+async def test_a_failed_validation_opens_no_pr(
+    tmp_path: Path, calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failed_validate(state: IssueState) -> dict[str, Any]:
+        calls.append("validate")
+        return {"outcome": "failed"}
+
+    monkeypatch.setattr(graph, "validate", failed_validate)
+    await wait_for_approval(tmp_path / "checkpoints.db")
+    state = await resume(tmp_path / "checkpoints.db", "approve")
+    assert calls == ["research", "plan", "implement", "validate"]
+    assert state["outcome"] == "failed"
 
 
 async def test_reject_never_reaches_implement(tmp_path: Path, calls: list[str]) -> None:

@@ -36,7 +36,13 @@ do not do their work yourself.
 {stage_note}
 End your final answer with exactly one line, and nothing after it:
 FACTORY_RESULT: {{"status": "ok" or "fail", "artifact": "<repository-relative path of the \
-document you wrote, or null>", "summary": "<1-3 sentences>"}}"""
+document you wrote, or null>", "summary": "<1-3 sentences>"{result_extra}}}"""
+
+# Fields a stage must add to its FACTORY_RESULT line; shown in the line itself, since the
+# model copies the line's shape and drops fields asked for only in prose.
+RESULT_EXTRA: dict[Stage, str] = {
+    "validate": ', "tests_exit_code": <exit code of `make check test`, an integer>',
+}
 
 STAGE_NOTES: dict[Stage, str] = {
     "research": "Write the research document under thoughts/shared/research/ in this repository.",
@@ -45,6 +51,21 @@ STAGE_NOTES: dict[Stage, str] = {
         "approval of the plan's structure: there is exactly one human approval, after you "
         "finish. The plan must have no open questions. Omit the Ticket Communication "
         "section."
+    ),
+    "implement": (
+        "Run all phases consecutively with no pause for manual verification; list manual "
+        "steps in your final answer instead. `phase-implementer` agents run in this VM; do "
+        "not commit. The repo's checks are `make check test`. Mark each phase complete in the "
+        "plan once its automated checks pass, and give the plan's path as the artifact."
+    ),
+    "validate": (
+        "Nothing is committed: the implementation is the uncommitted working tree, so use "
+        "`git status` and `git diff` instead of commits. Do not change any code. Run `make "
+        "check test` and put its exit code in FACTORY_RESULT as `tests_exit_code` (an "
+        "integer); status is `ok` only if every automated criterion passed. Criteria that "
+        "need GitHub, the network or a human cannot run here: list them in the report, they "
+        "do not fail the validation. Write the validation report under "
+        "thoughts/shared/validation/ in this repository and give its path as the artifact."
     ),
 }
 
@@ -64,7 +85,9 @@ class NoResult(Exception):
 
 
 def contract(stage: Stage) -> str:
-    return CONTRACT.format(stage_note=STAGE_NOTES.get(stage, ""))
+    return CONTRACT.format(
+        stage_note=STAGE_NOTES.get(stage, ""), result_extra=RESULT_EXTRA.get(stage, "")
+    )
 
 
 def build_message(stage: Stage, args: str) -> tuple[str, str]:
@@ -95,6 +118,12 @@ def plan_args(number: int, title: str, body: str, research_path: str) -> str:
         f"<issue>\n{body}\n</issue>\n\n"
         f"Research: {research_path}"
     )
+
+
+def validation_passed(result: FactoryResult) -> bool:
+    """Only an `ok` with `tests_exit_code` 0 passes; a missing exit code fails."""
+    code = (result.model_extra or {}).get("tests_exit_code")
+    return result.status == "ok" and type(code) is int and code == 0
 
 
 def parse_result(agent_message: str | None) -> FactoryResult:

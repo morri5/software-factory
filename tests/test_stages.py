@@ -98,3 +98,51 @@ def test_plan_message_allows_one_approval_only(commands: Path) -> None:
 
 def test_plan_contract_omits_ticket_communication() -> None:
     assert "Omit the Ticket Communication section." in stages.contract("plan")
+
+
+def result(status: str, **extra: object) -> stages.FactoryResult:
+    return stages.FactoryResult.model_validate(
+        {"status": status, "artifact": "thoughts/v.md", "summary": "s", **extra}
+    )
+
+
+def test_validation_passes_only_with_ok_and_exit_code_zero() -> None:
+    assert stages.validation_passed(result("ok", tests_exit_code=0))
+
+
+@pytest.mark.parametrize(
+    "res",
+    [
+        result("ok"),  # exit code missing
+        result("ok", tests_exit_code=2),
+        result("ok", tests_exit_code="0"),
+        result("ok", tests_exit_code=False),
+        result("ok", tests_exit_code=None),
+        result("fail", tests_exit_code=0),
+    ],
+)
+def test_validation_fails(res: stages.FactoryResult) -> None:
+    assert not stages.validation_passed(res)
+
+
+def test_validate_message_asks_for_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "validate_plan.md").write_text("# Validate Plan\n")
+    monkeypatch.setattr(config, "COMMANDS_DIR", tmp_path)
+    text, _ = build_message("validate", "thoughts/shared/plans/p.md")
+    assert "`tests_exit_code`" in text and "make check test" in text
+    assert text.endswith("ARGUMENTS: thoughts/shared/plans/p.md")
+
+
+def test_implement_contract_runs_every_phase_without_commits() -> None:
+    note = stages.contract("implement")
+    assert "no pause for manual verification" in note
+    assert "do not commit" in note
+    assert "make check test" in note
+
+
+def test_validate_result_line_asks_for_the_exit_code() -> None:
+    line = stages.contract("validate").splitlines()[-1]
+    assert line.startswith("FACTORY_RESULT:") and '"tests_exit_code":' in line
+    assert '"tests_exit_code"' not in stages.contract("research")

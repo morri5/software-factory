@@ -111,3 +111,14 @@ def record_stage_run(
                 commands_sha, run.agents_sha, started_at, now(),
             ),
         )  # fmt: skip
+
+
+def current_runs(db: sqlite3.Connection, number: int) -> list[sqlite3.Row]:
+    """The stage runs of the issue's current run (since its row last started over)."""
+    return db.execute(
+        """
+        SELECT r.* FROM stage_runs r JOIN issues i ON i.number = r.issue
+        WHERE r.issue = ? AND r.started_at >= i.started_at ORDER BY r.id
+        """,
+        (number,),
+    ).fetchall()

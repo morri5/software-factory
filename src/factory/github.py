@@ -62,6 +62,16 @@ def set_status(number: int, status: str) -> None:
     _gh(*args)
 
 
+def create_pr(head: str, title: str, body: str) -> str:
+    """Open a PR from `head` against the default branch; returns its URL."""
+    out = _gh(
+        "pr", "create", "-R", config.REPO, "--head", head, "--title", title,
+        "--body-file", "-",
+        stdin=body,
+    )  # fmt: skip
+    return out.strip().splitlines()[-1]
+
+
 class Decision(TypedDict):
     """The approver's answer to a plan: a `/approve` or `/reject <reason>` comment."""
 

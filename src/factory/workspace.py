@@ -17,8 +17,8 @@ class ArtifactError(Exception):
     """The artifact path is outside the tree or the file does not exist."""
 
 
-def _git(*args: str, cwd: Path | None = None, stdin: bytes | None = None) -> None:
-    subprocess.run(
+def _git(*args: str, cwd: Path | None = None, stdin: bytes | None = None) -> str:
+    result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         input=stdin,
@@ -26,6 +26,7 @@ def _git(*args: str, cwd: Path | None = None, stdin: bytes | None = None) -> Non
         capture_output=True,
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
+    return result.stdout.decode()
 
 
 def materialize(repo: str, base_commit: str | None, patch: bytes) -> Path:

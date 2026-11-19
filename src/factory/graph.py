@@ -1,8 +1,9 @@
 """One LangGraph thread per issue (`thread_id = issue-<n>`), checkpointed in SQLite.
 
-For now the graph is `research -> plan -> approve -> implement (a stub) | rejected`.
-A stage node runs its command in the issue's sandbox session, records the run,
-reads the stage's document out of the saved workspace and reports on the issue.
+The graph is `research -> plan -> approve -> implement -> validate -> open_pr`, or
+`approve -> rejected`. A stage node runs its command in the issue's sandbox session,
+records the run, reads the stage's document out of the saved workspace and reports on
+the issue.
 Any failure labels the issue `factory:failed` with a comment that names the reason
 and the session, and ends the graph.
 
@@ -21,7 +22,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from factory import config, github, sandbox, stages, store
+from factory import config, github, pr, sandbox, stages, store
 from factory.sandbox import StageRun
 from factory.stages import FactoryResult, NoResult, Stage
 from factory.workspace import ArtifactError, materialize, read_artifact
@@ -37,8 +38,12 @@ class IssueState(TypedDict, total=False):
     outcome: Literal["ok", "failed", "rejected"]
     research_path: str
     plan_path: str
+    plan_summary: str
     plan_comment_at: str
     decision: github.Decision
+    validate_summary: str
+    base_commit: str | None
+    patch: bytes  # the workspace after validate: what the PR is made of
 
 
 @dataclass
@@ -46,6 +51,8 @@ class StageFailed(Exception):
     reason: str
     run: StageRun | None = None
     summary: str | None = None
+    path: str | None = None  # the stage's document, when it wrote one
+    document: str | None = None
 
 
 @dataclass
@@ -71,8 +78,9 @@ def fence_frontmatter(document: str) -> str:
     return f"```yaml\n{meta}\n```\n{body}" if sep else document
 
 
-def stage_comment(stage: Stage, done: StageDone) -> str:
-    document = fence_frontmatter(done.document)
+def details(stage: Stage, path: str, document: str) -> str:
+    """The document, folded; GitHub shows the summary line only until it is opened."""
+    document = fence_frontmatter(document)
     if len(document) > MAX_DOC_CHARS:
         document = (
             document[:MAX_DOC_CHARS]
@@ -80,9 +88,15 @@ def stage_comment(stage: Stage, done: StageDone) -> str:
             "in the session's workspace.)*"
         )
     return (
+        f"<details><summary>{stage.capitalize()} document: <code>{path}</code></summary>"
+        f"\n\n{document}\n\n</details>"
+    )
+
+
+def stage_comment(stage: Stage, done: StageDone) -> str:
+    return (
         f"**Factory: {stage}**\n\n{done.result.summary}\n\n"
-        f"<details><summary>{stage.capitalize()} document: <code>{done.path}</code></summary>"
-        f"\n\n{document}\n\n</details>\n\n"
+        f"{details(stage, done.path, done.document)}\n\n"
         f"<sub>{metrics(done.run)}. Sandbox session <code>{done.run.session_id}</code>.</sub>"
     )
 
@@ -91,6 +105,8 @@ def failure_comment(stage: Stage, session_id: UUID, failed: StageFailed) -> str:
     lines = [f"**Factory: {stage} failed.** Reason: `{failed.reason}`."]
     if failed.summary:
         lines.append(failed.summary)
+    if failed.path and failed.document is not None:
+        lines.append(details(stage, failed.path, failed.document))
     if failed.run is not None:
         lines.append(f"<sub>{metrics(failed.run)}.</sub>")
     lines.append(f"Sandbox session `{session_id}`.")
@@ -105,9 +121,11 @@ async def run_stage(
     started_at = store.now()
     run = await sandbox.run_stage(session_id, text, config.LIMITS[stage])
 
-    def fail(reason: str, summary: str | None = None) -> StageFailed:
+    def fail(
+        reason: str, summary: str | None = None, path: str | None = None, doc: str | None = None
+    ) -> StageFailed:
         store.record_stage_run(db, issue, stage, run, commands_sha, started_at, "fail", reason)
-        return StageFailed(reason, run, summary)
+        return StageFailed(reason, run, summary, path, doc)
 
     if run.status != "ok":
         store.record_stage_run(db, issue, stage, run, commands_sha, started_at)
@@ -116,17 +134,25 @@ async def run_stage(
         result = stages.parse_result(run.agent_message)
     except NoResult as exc:
         raise fail("no_result", str(exc)) from exc
+    # Read the document also for a failed stage: a failed validation reports in it.
+    document: str | None = None
+    missing: str | None = None
+    if result.artifact:
+        tree = materialize(config.repo_url(), run.base_commit, run.patch)
+        try:
+            document = read_artifact(tree, result.artifact)
+        except ArtifactError as exc:
+            missing = str(exc)
+        finally:
+            shutil.rmtree(tree.parent)
     if result.status != "ok":
-        raise fail("agent_reported_fail", result.summary)
+        raise fail("agent_reported_fail", result.summary, result.artifact, document)
+    if stage == "validate" and not stages.validation_passed(result):
+        raise fail("validation_failed", result.summary, result.artifact, document)
     if not result.artifact:
         raise fail("no_artifact", result.summary)
-    tree = materialize(config.repo_url(), run.base_commit, run.patch)
-    try:
-        document = read_artifact(tree, result.artifact)
-    except ArtifactError as exc:
-        raise fail("artifact_missing", str(exc)) from exc
-    finally:
-        shutil.rmtree(tree.parent)
+    if document is None:
+        raise fail("artifact_missing", missing)
     store.record_stage_run(db, issue, stage, run, commands_sha, started_at)
     return StageDone(run, result, result.artifact, document)
 
@@ -181,7 +207,12 @@ async def plan(state: IssueState) -> dict[str, Any]:
         plan_comment_at=posted["created_at"],
     )
     github.set_status(n, "awaiting-approval")
-    return {"outcome": "ok", "plan_path": done.path, "plan_comment_at": posted["created_at"]}
+    return {
+        "outcome": "ok",
+        "plan_path": done.path,
+        "plan_summary": done.result.summary,
+        "plan_comment_at": posted["created_at"],
+    }
 
 
 def approve(state: IssueState) -> dict[str, Any]:
@@ -193,12 +224,53 @@ def approve(state: IssueState) -> dict[str, Any]:
 
 
 async def implement(state: IssueState) -> dict[str, Any]:
-    """A stub until the implement stage exists: records the approval and ends."""
     n = state["issue"]
-    store.update_issue(
-        store.connect(), n, state="approved", approved_at=state["decision"]["created_at"]
-    )
-    github.set_status(n, "approved")
+    db = store.connect()
+    session_id = UUID(state["session_id"])
+    store.update_issue(db, n, state="implement", approved_at=state["decision"]["created_at"])
+    github.set_status(n, "implement")
+    try:
+        await run_stage(db, n, "implement", session_id, state["plan_path"])
+    except StageFailed as failed:
+        return stage_failed(db, n, "implement", session_id, failed)
+    return {"outcome": "ok"}
+
+
+async def validate(state: IssueState) -> dict[str, Any]:
+    """Passes only with `status: ok` and `tests_exit_code: 0`; a failure opens no PR."""
+    n = state["issue"]
+    db = store.connect()
+    session_id = UUID(state["session_id"])
+    store.update_issue(db, n, state="validate")
+    try:
+        done = await run_stage(db, n, "validate", session_id, state["plan_path"])
+    except StageFailed as failed:
+        return stage_failed(db, n, "validate", session_id, failed)
+    return {
+        "outcome": "ok",
+        "validate_summary": done.result.summary,
+        "base_commit": done.run.base_commit,
+        "patch": done.run.patch,
+    }
+
+
+async def open_pr(state: IssueState) -> dict[str, Any]:
+    n = state["issue"]
+    db = store.connect()
+    labels = [lb["name"] for lb in github.issue(n)["labels"]]
+    table = pr.metrics_table(store.current_runs(db, n))
+    message = pr.commit_message(n, state["title"], labels)
+    body = pr.pr_body(n, state["plan_summary"], state["validate_summary"], table)
+    try:
+        url = pr.open_pr(n, message, body, state["base_commit"], state["patch"])
+    except pr.PrRefused as exc:
+        github.comment(n, f"**Factory: no pull request.** {exc}.\n\n{table}")
+        github.set_status(n, "failed")
+        store.update_issue(db, n, state="failed")
+        return {"outcome": "failed"}
+    github.comment(n, f"**Factory: pull request opened.** {url}\n\n{table}")
+    github.set_status(n, "pr-open")
+    store.update_issue(db, n, state="pr_open", pr_url=url, finished_at=store.now())
     return {"outcome": "ok"}
 
 
@@ -221,6 +293,8 @@ def build(checkpointer: BaseCheckpointSaver[Any]) -> Any:
     graph.add_node("plan", plan)
     graph.add_node("approve", approve)
     graph.add_node("implement", implement)
+    graph.add_node("validate", validate)
+    graph.add_node("open_pr", open_pr)
     graph.add_node("rejected", rejected)
     graph.add_edge(START, "research")
     graph.add_conditional_edges("research", lambda s: "plan" if _ok(s) else END, ["plan", END])
@@ -230,6 +304,12 @@ def build(checkpointer: BaseCheckpointSaver[Any]) -> Any:
         lambda s: "implement" if s["decision"]["action"] == "approve" else "rejected",
         ["implement", "rejected"],
     )
-    graph.add_edge("implement", END)
+    graph.add_conditional_edges(
+        "implement", lambda s: "validate" if _ok(s) else END, ["validate", END]
+    )
+    graph.add_conditional_edges(
+        "validate", lambda s: "open_pr" if _ok(s) else END, ["open_pr", END]
+    )
+    graph.add_edge("open_pr", END)
     graph.add_edge("rejected", END)
     return graph.compile(checkpointer=checkpointer)
