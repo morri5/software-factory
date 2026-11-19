@@ -13,22 +13,33 @@ from typing import Any
 from uuid import UUID
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import Command
 
 from factory import config, github, graph, sandbox, store
 
 log = logging.getLogger("factory")
 
 
-async def run_issue(number: int) -> dict[str, Any]:
-    """Run the issue's graph until it ends; at the end its sandbox session is closed."""
-    issue = github.issue(number)
+async def run_issue(number: int, decision: github.Decision | None = None) -> dict[str, Any]:
+    """Run the issue's graph until it ends or waits for approval.
+
+    Without a decision the issue starts over; with one, its thread resumes at the
+    approval. At the end the issue's sandbox session is closed.
+    """
     db = store.connect()
-    store.start_issue(db, number, issue["title"])
     config.VAR_DIR.mkdir(parents=True, exist_ok=True)
     async with AsyncSqliteSaver.from_conn_string(str(config.VAR_DIR / "checkpoints.db")) as saver:
         app = graph.build(saver)
         thread = {"configurable": {"thread_id": f"issue-{number}"}}
-        start = {"issue": number, "title": issue["title"], "body": issue["body"] or ""}
+        start: dict[str, Any] | Command[Any]
+        if decision is None:
+            issue = github.issue(number)
+            store.start_issue(db, number, issue["title"])
+            start = {"issue": number, "title": issue["title"], "body": issue["body"] or ""}
+        else:
+            if (await app.aget_state(thread)).next != ("approve",):
+                raise RuntimeError(f"issue #{number} has no thread waiting for approval")
+            start = Command(resume=decision)
         state: dict[str, Any] = await app.ainvoke(start, thread)
         if not (await app.aget_state(thread)).next:  # reached END
             if state.get("session_id"):
@@ -37,32 +48,48 @@ async def run_issue(number: int) -> dict[str, Any]:
     return state
 
 
-def run_once(number: int) -> bool:
-    """Run one issue; True if it ended well. An unexpected error fails the issue."""
+def run_once(number: int, decision: github.Decision | None = None) -> bool:
+    """Run or resume one issue; True if it went well. An unexpected error fails the issue."""
     try:
-        state = asyncio.run(run_issue(number))
+        state = asyncio.run(run_issue(number, decision))
     except Exception as exc:
         log.exception("issue #%d: the factory failed", number)
         try:
+            db = store.connect()
+            store.update_issue(db, number, state="failed", finished_at=store.now())
             github.comment(number, f"**Factory failed.** Unexpected error: `{exc!r}`"[:2000])
             github.set_status(number, "failed")
-            row = (
-                store.connect()
-                .execute("SELECT session_id FROM issues WHERE number = ?", (number,))
-                .fetchone()
-            )
+            row = db.execute("SELECT session_id FROM issues WHERE number = ?", (number,)).fetchone()
             if row and row["session_id"]:
                 asyncio.run(sandbox.close_session(UUID(row["session_id"])))
         except Exception:
             log.exception("issue #%d: could not report the failure", number)
         return False
-    log.info("issue #%d: %s", number, state.get("outcome"))
+    waiting = " (awaiting approval)" if "__interrupt__" in state else ""
+    log.info("issue #%d: %s%s", number, state.get("outcome"), waiting)
     return state.get("outcome") == "ok"
+
+
+def resume_decided() -> None:
+    """Resume every issue whose plan the approver has answered since the last tick."""
+    waiting = store.connect().execute(
+        "SELECT number, plan_comment_at FROM issues WHERE state = 'awaiting_approval'"
+    )
+    for row in waiting.fetchall():
+        try:
+            decision = github.find_decision(row["number"], row["plan_comment_at"], config.APPROVER)
+        except Exception:
+            log.exception("issue #%d: could not read the comments", row["number"])
+            continue
+        if decision is not None:
+            log.info("issue #%d: %s by %s", row["number"], decision["action"], config.APPROVER)
+            run_once(row["number"], decision)
 
 
 def watch() -> None:
     log.info("watching %s every %d s", config.REPO, config.POLL_S)
     while True:
+        resume_decided()
         try:
             queued = github.queued_issues()
         except Exception:
