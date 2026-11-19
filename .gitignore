@@ -1,0 +1,19 @@
+# Local list of names that must never appear in tracked files (see scripts/check_names.sh)
+.names-denylist
+
+# Local settings and state
+.env
+var/
+.claude/settings.local.json
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local-only notes (HumanLayer thoughts)
+thoughts/
