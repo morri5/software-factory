@@ -54,8 +54,16 @@ def metrics(run: StageRun) -> str:
     )
 
 
+def fence_frontmatter(document: str) -> str:
+    """Show YAML frontmatter as a code block; bare, GitHub renders it as a heading."""
+    if not document.startswith("---\n"):
+        return document
+    meta, sep, body = document[4:].partition("\n---\n")
+    return f"```yaml\n{meta}\n```\n{body}" if sep else document
+
+
 def stage_comment(stage: Stage, done: StageDone) -> str:
-    document = done.document
+    document = fence_frontmatter(done.document)
     if len(document) > MAX_DOC_CHARS:
         document = (
             document[:MAX_DOC_CHARS]
