@@ -106,6 +106,8 @@ flowchart TD
 
 Requirements: [uv](https://docs.astral.sh/uv/), Docker (for Langfuse), the `gh` CLI logged in with the `repo` scope, and a checkout of `sandboxed-agents-lab` next to this repo with its own requirements (microsandbox, `DEEPSEEK_API_KEY`).
 
+You also need your own Claude Code command files (`research_codebase.md`, `create_plan.md`, `implement_plan.md`, `validate_plan.md`) and the agent files they spawn; this repo does not ship them (see [Limitations](#limitations)).
+
 1. Start the session API in the sandbox lab, with the subagent definitions it should load:
 
    ```
@@ -167,7 +169,8 @@ Each issue run is one trace in Langfuse, with one generation per stage (usage, c
 
 ## Limitations
 
-- **DeepSeek behind Claude Code is unsupported.** The Claude Agent SDK talks to DeepSeek's Anthropic-compatible endpoint. It works for these runs, but neither side promises it, and the SDK's own usage figures leave out the subagents (the runner reads them from the CLI's transcripts instead).
+- **Runs on DeepSeek through an unofficial path.** The Claude Agent SDK talks to DeepSeek's Anthropic-compatible endpoint. It works for every run here, but neither vendor officially supports the combination, so an update on either side can break it. One symptom already: the SDK's usage figures leave out the subagents, so the runner reads them from the CLI's transcripts.
+- **The commands and agents are not included.** The stages run my own versions of the `research_codebase`, `create_plan`, `implement_plan` and `validate_plan` commands and the subagents they spawn. They started from the ones HumanLayer published in [humanlayer/humanlayer/.claude](https://github.com/humanlayer/humanlayer/tree/main/.claude) and have since been modified for my own use, and they stay private. To run the factory, point `FACTORY_COMMANDS_DIR` and `LAB_FACTORY_AGENTS_DIR` at your own command and agent files with those names.
 - **Public repositories only.** The model provider receives the code.
 - **Stdlib-only target.** The VM can reach the model provider and nothing else, so it cannot install packages; validate can only run tests that need nothing beyond the standard library.
 - **No revision loop.** `/reject <reason>` ends the run; a failed validate ends it too. Re-running an issue starts over at research.
