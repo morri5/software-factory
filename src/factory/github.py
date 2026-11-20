@@ -14,11 +14,30 @@ from factory import config
 
 TRIGGER = "factory"
 STATUS_PREFIX = "factory:"
+STATUSES = (
+    "research", "awaiting-approval", "implement", "pr-open", "merged", "failed", "rejected",
+)  # fmt: skip
 
 
 def _gh(*args: str, stdin: str | None = None) -> str:
-    result = subprocess.run(["gh", *args], input=stdin, check=True, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            ["gh", *args], input=stdin, check=True, capture_output=True, text=True
+        )
+    except subprocess.CalledProcessError as exc:  # gh's stderr says why ("label not found")
+        raise RuntimeError(f"gh {' '.join(args[:2])} failed: {exc.stderr.strip()}") from exc
     return result.stdout
+
+
+def ensure_labels() -> list[str]:
+    """Create the trigger and status labels the repo lacks; returns the ones created."""
+    out = _gh("label", "list", "-R", config.REPO, "--json", "name", "--limit", "1000")
+    existing = {lb["name"] for lb in json.loads(out)}
+    wanted = [TRIGGER] + [STATUS_PREFIX + s for s in STATUSES]
+    missing = [name for name in wanted if name not in existing]
+    for name in missing:
+        _gh("label", "create", name, "-R", config.REPO, "--color", "8250df")
+    return missing
 
 
 def issue(number: int) -> dict[str, Any]:
@@ -70,6 +89,13 @@ def create_pr(head: str, title: str, body: str) -> str:
         stdin=body,
     )  # fmt: skip
     return out.strip().splitlines()[-1]
+
+
+def merged_at(pr_url: str) -> str | None:
+    """When the PR was merged (ISO time), or None while it is open or closed unmerged."""
+    out = _gh("pr", "view", pr_url, "--json", "mergedAt")
+    merged: str | None = json.loads(out)["mergedAt"]
+    return merged or None
 
 
 class Decision(TypedDict):

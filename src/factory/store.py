@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS issues (
     pr_url TEXT,
     started_at TEXT NOT NULL,
     approved_at TEXT,
-    finished_at TEXT
+    finished_at TEXT,
+    merged_at TEXT
 );
 CREATE TABLE IF NOT EXISTS stage_runs (
     id INTEGER PRIMARY KEY,
@@ -56,6 +57,9 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    columns = {r["name"] for r in db.execute("PRAGMA table_info(issues)")}
+    if "merged_at" not in columns:  # a database from before `factory:merged`
+        db.execute("ALTER TABLE issues ADD COLUMN merged_at TEXT")
     return db
 
 
@@ -69,7 +73,8 @@ def start_issue(db: sqlite3.Connection, number: int, title: str) -> None:
             ON CONFLICT (number) DO UPDATE SET
                 title = excluded.title, state = 'started', session_id = NULL,
                 plan_comment_id = NULL, plan_comment_at = NULL, pr_url = NULL,
-                started_at = excluded.started_at, approved_at = NULL, finished_at = NULL
+                started_at = excluded.started_at, approved_at = NULL, finished_at = NULL,
+                merged_at = NULL
             """,
             (number, title, f"issue-{number}", now()),
         )

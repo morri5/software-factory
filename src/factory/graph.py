@@ -22,7 +22,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from factory import config, github, pr, sandbox, stages, store
+from factory import config, github, pr, sandbox, stages, store, tracing
 from factory.sandbox import StageRun
 from factory.stages import FactoryResult, NoResult, Stage
 from factory.workspace import ArtifactError, materialize, read_artifact
@@ -116,19 +116,26 @@ def failure_comment(stage: Stage, session_id: UUID, failed: StageFailed) -> str:
 async def run_stage(
     db: sqlite3.Connection, issue: int, stage: Stage, session_id: UUID, args: str
 ) -> StageDone:
-    """Run the stage and read its document; every run is recorded, also a failed one."""
+    """Run the stage and read its document; every run is recorded and traced, also a
+    failed one."""
     text, commands_sha = stages.build_message(stage, args)
     started_at = store.now()
     run = await sandbox.run_stage(session_id, text, config.LIMITS[stage])
 
+    def record(status: str | None = None, reason: str | None = None) -> None:
+        store.record_stage_run(db, issue, stage, run, commands_sha, started_at, status, reason)
+        if status is None:
+            status, reason = run.status, run.reason
+        tracing.stage_run(db, issue, stage, run, commands_sha, status, reason)
+
     def fail(
         reason: str, summary: str | None = None, path: str | None = None, doc: str | None = None
     ) -> StageFailed:
-        store.record_stage_run(db, issue, stage, run, commands_sha, started_at, "fail", reason)
+        record("fail", reason)
         return StageFailed(reason, run, summary, path, doc)
 
     if run.status != "ok":
-        store.record_stage_run(db, issue, stage, run, commands_sha, started_at)
+        record()
         raise StageFailed(run.reason or run.status, run)
     try:
         result = stages.parse_result(run.agent_message)
@@ -153,7 +160,7 @@ async def run_stage(
         raise fail("no_artifact", result.summary)
     if document is None:
         raise fail("artifact_missing", missing)
-    store.record_stage_run(db, issue, stage, run, commands_sha, started_at)
+    record()
     return StageDone(run, result, result.artifact, document)
 
 
@@ -228,6 +235,7 @@ async def implement(state: IssueState) -> dict[str, Any]:
     db = store.connect()
     session_id = UUID(state["session_id"])
     store.update_issue(db, n, state="implement", approved_at=state["decision"]["created_at"])
+    tracing.approval_wait(db, n, state["plan_comment_at"], state["decision"]["created_at"])
     github.set_status(n, "implement")
     try:
         await run_stage(db, n, "implement", session_id, state["plan_path"])
@@ -276,10 +284,12 @@ async def open_pr(state: IssueState) -> dict[str, Any]:
 
 async def rejected(state: IssueState) -> dict[str, Any]:
     n = state["issue"]
+    db = store.connect()
+    tracing.approval_wait(db, n, state["plan_comment_at"], state["decision"]["created_at"])
     reason = state["decision"]["reason"] or "no reason given"
     github.comment(n, f"**Factory: plan rejected.** Reason: {reason}\n\nThe run ends here.")
     github.set_status(n, "rejected")
-    store.update_issue(store.connect(), n, state="rejected")
+    store.update_issue(db, n, state="rejected")
     return {"outcome": "rejected"}
 
 

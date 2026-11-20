@@ -20,6 +20,10 @@ APPROVER = os.environ.get("FACTORY_APPROVER", "morri5")
 COMMANDS_DIR = Path(os.environ.get("FACTORY_COMMANDS_DIR", "~/.claude/commands")).expanduser()
 POLL_S = int(os.environ.get("FACTORY_POLL_S", "60"))
 VAR_DIR = Path(os.environ.get("FACTORY_VAR_DIR", "var"))
+# Langfuse from compose.yaml (`make langfuse-up`); its headless init creates these keys.
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "http://localhost:3100")
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "pk-lf-factory")
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "sk-lf-factory")
 
 
 def repo_url(repo: str = REPO) -> str:

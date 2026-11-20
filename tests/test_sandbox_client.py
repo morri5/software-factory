@@ -84,6 +84,8 @@ async def test_run_stage_computes_the_metrics(api: Any) -> None:
     assert (run.tool_calls, run.subagent_tool_calls) == (61, 46)
     assert run.num_turns == 16
     assert run.wall_s == 54.47
+    assert run.started_at == "2026-11-19T17:58:44.457953+00:00"
+    assert run.ended_at == "2026-11-19T17:59:38.930955+00:00"
     assert run.agents_sha and run.agents_sha.startswith("d694072057a7")
     assert run.patch.startswith(b"diff --git a/thoughts/shared/research/")
     assert run.base_commit is None  # a fixture repo; https clones report their commit

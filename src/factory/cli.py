@@ -1,4 +1,5 @@
-"""`factory run --issue N` (one issue, in the foreground) and `factory watch` (the loop).
+"""`factory run --issue N` (one issue, in the foreground), `factory watch` (the loop) and
+`factory report` (`docs/runs.md` from the factory's record).
 
 Both talk to a running session API (`make -C ../sandboxed-agents-lab api`); the
 factory never starts its own, since only one API process may run per database.
@@ -15,7 +16,7 @@ from uuid import UUID
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
-from factory import config, github, graph, sandbox, store
+from factory import config, github, graph, report, sandbox, store
 
 log = logging.getLogger("factory")
 
@@ -86,10 +87,31 @@ def resume_decided() -> None:
             run_once(row["number"], decision)
 
 
+def mark_merged() -> None:
+    """Label `factory:merged` the issues whose PR was merged since the last tick.
+
+    The list comes from SQLite: a merged PR closes its issue, and the queue lists open
+    issues only. A PR closed without merge changes nothing.
+    """
+    db = store.connect()
+    for row in db.execute("SELECT number, pr_url FROM issues WHERE state = 'pr_open'").fetchall():
+        try:
+            merged = github.merged_at(row["pr_url"])
+            if merged is not None:
+                github.set_status(row["number"], "merged")
+                store.update_issue(db, row["number"], state="merged", merged_at=merged)
+                log.info("issue #%d: PR merged", row["number"])
+        except Exception:
+            log.exception("issue #%d: could not check its PR", row["number"])
+
+
 def watch() -> None:
     log.info("watching %s every %d s", config.REPO, config.POLL_S)
+    if created := github.ensure_labels():
+        log.info("created labels: %s", ", ".join(created))
     while True:
         resume_decided()
+        mark_merged()
         try:
             queued = github.queued_issues()
         except Exception:
@@ -108,8 +130,12 @@ def main() -> None:
     commands.add_parser("watch", help="run labelled issues one at a time, forever")
     run = commands.add_parser("run", help="run one issue in the foreground")
     run.add_argument("--issue", type=int, required=True)
+    commands.add_parser("report", help=f"write {report.PATH} from the factory's record")
     args = parser.parse_args()
     if args.command == "watch":
         watch()
+    elif args.command == "report":
+        report.write()
+        print(f"wrote {report.PATH}")
     else:
         sys.exit(0 if run_once(args.issue) else 1)

@@ -41,6 +41,8 @@ class StageRun(BaseModel):
     subagent_tool_calls: int
     num_turns: int | None
     wall_s: float
+    started_at: str | None  # the run's first and last event (ISO), for the trace
+    ended_at: str | None
     patch: bytes
     base_commit: str | None  # the commit the session cloned; the patch applies on it
     agents_sha: str | None
@@ -180,6 +182,8 @@ def stage_run(log: list[dict[str, Any]], idem_key: str, timed_out: bool = False)
         subagent_tool_calls=sum(c["payload"].get("parent") is not None for c in calls),
         num_turns=payload.get("num_turns"),
         wall_s=_seconds(starts[-1], end) if starts and end else 0.0,
+        started_at=starts[-1]["created_at"] if starts else None,
+        ended_at=end["created_at"] if end else None,
         patch=base64.b64decode(saved[-1]["payload"]["patch_b64"]) if saved else b"",
         base_commit=attached[-1]["payload"].get("commit") if attached else None,
         agents_sha=payload.get("agents_sha"),

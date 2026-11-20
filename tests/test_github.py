@@ -78,3 +78,15 @@ def test_set_status_without_an_old_label(gh: Any) -> None:
     fake = gh(json.dumps({"number": 4, "labels": [{"name": "factory"}]}), "")
     github.set_status(4, "research")
     assert fake.calls[1][0][-2:] == ["--add-label", "factory:research"]
+
+
+def test_ensure_labels_creates_only_the_missing_ones(gh: Any) -> None:
+    present = [{"name": n} for n in ("bug", "factory", "factory:research", "factory:failed")]
+    fake = gh(json.dumps(present), *[""] * 6)
+    created = github.ensure_labels()
+    assert created == [
+        "factory:awaiting-approval", "factory:implement", "factory:pr-open",
+        "factory:merged", "factory:rejected",
+    ]  # fmt: skip
+    assert [c[0][3] for c in fake.calls[1:]] == created
+    assert all(c[0][:3] == ["gh", "label", "create"] for c in fake.calls[1:])

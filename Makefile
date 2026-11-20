@@ -1,4 +1,4 @@
-.PHONY: lint test check-names watch run
+.PHONY: lint test check-names watch run report langfuse-up langfuse-down
 
 # Settings live in .env (see .env.example); every target sees them.
 -include .env
@@ -24,3 +24,13 @@ watch:
 run:
 	@test -n "$(ISSUE)" || { echo "usage: make run ISSUE=<number>"; exit 2; }
 	uv run factory run --issue $(ISSUE)
+
+report:
+	uv run factory report
+
+# Langfuse (compose.yaml): UI on http://localhost:3100, login admin@factory.local.
+langfuse-up:
+	docker compose up -d --wait
+
+langfuse-down:
+	docker compose down
