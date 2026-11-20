@@ -1,4 +1,4 @@
-# multi-agent-lab: a personal software factory
+# software-factory: a personal multi-agent software factory
 
 **TL;DR:** you write a GitHub issue, approve the plan an agent proposes, and get back a pull request with green CI. Everything in between (research, planning, coding, testing) runs on its own, inside a throwaway VM, and every step is measured. On the demo repo it closed 4 of 4 issues at about $0.16 and 6 minutes each.
 
@@ -33,13 +33,13 @@ flowchart LR
     end
 ```
 
-The stages run my own Claude Code commands (`research_codebase`, `create_plan`, `implement_plan`, `validate_plan`) headless, on DeepSeek, inside a microVM from [sandboxed-agents-lab](https://github.com/morri5/sandboxed-agents-lab). Results on the demo repo [factory-playground](https://github.com/morri5/factory-playground): 4 of 4 issues reached a pull request with green CI, at a median of $0.1578 and 6 min 26 s of factory time per issue (see [Runs](#runs)).
+The stages run my own Claude Code commands (`research_codebase`, `create_plan`, `implement_plan`, `validate_plan`) headless, on DeepSeek, inside a microVM from [sandboxed-agents](https://github.com/morri5/sandboxed-agents). Results on the demo repo [factory-playground](https://github.com/morri5/factory-playground): 4 of 4 issues reached a pull request with green CI, at a median of $0.1578 and 6 min 26 s of factory time per issue (see [Runs](#runs)).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph HOST["multi-agent-lab (host)"]
+    subgraph HOST["software-factory (host)"]
         W[factory watch<br/>poll loop] --> G[LangGraph per issue<br/>SqliteSaver checkpoints]
         G --> ST[stage runner<br/>command text + headless contract]
         G --> M[(var/factory.db<br/>stage metrics)]
@@ -49,7 +49,7 @@ flowchart LR
     GH[(GitHub: issues, comments,<br/>labels, PRs)] <-->|gh CLI| W
     GH <--> PR
     ST -->|"HTTP: POST /messages<br/>{text, fresh_context, limits}"| API
-    subgraph SAL["sandboxed-agents-lab"]
+    subgraph SAL["sandboxed-agents"]
         API[session API] --> H["claude_factory harness<br/>subagents from agent files<br/>Agent tool allowed, setting_sources=[]"]
         H --> VM[microVM: Claude Agent SDK<br/>DeepSeek only, no GitHub]
         API --> LOG[(event log: usage, cost,<br/>tool calls, workspace patch)]
@@ -104,14 +104,14 @@ flowchart TD
 
 ## Setup
 
-Requirements: [uv](https://docs.astral.sh/uv/), Docker (for Langfuse), the `gh` CLI logged in with the `repo` scope, and a checkout of `sandboxed-agents-lab` next to this repo with its own requirements (microsandbox, `DEEPSEEK_API_KEY`).
+Requirements: [uv](https://docs.astral.sh/uv/), Docker (for Langfuse), the `gh` CLI logged in with the `repo` scope, and a checkout of `sandboxed-agents` next to this repo with its own requirements (microsandbox, `DEEPSEEK_API_KEY`).
 
 You also need your own Claude Code command files (`research_codebase.md`, `create_plan.md`, `implement_plan.md`, `validate_plan.md`) and the agent files they spawn; this repo does not ship them (see [Limitations](#limitations)).
 
 1. Start the session API in the sandbox lab, with the subagent definitions it should load:
 
    ```
-   LAB_FACTORY_AGENTS_DIR=~/.claude/agents make -C ../sandboxed-agents-lab api
+   LAB_FACTORY_AGENTS_DIR=~/.claude/agents make -C ../sandboxed-agents api
    ```
 
    Only the agent files (as subagent definitions) and the command files (as message text) cross into the VM. Your `CLAUDE.md` and settings never do: the model provider would receive them.
@@ -127,7 +127,7 @@ You also need your own Claude Code command files (`research_codebase.md`, `creat
 ## Quick start
 
 ```
-make -C ../sandboxed-agents-lab api    # in one terminal (with LAB_FACTORY_AGENTS_DIR, see above)
+make -C ../sandboxed-agents api    # in one terminal (with LAB_FACTORY_AGENTS_DIR, see above)
 make watch                             # in another
 ```
 

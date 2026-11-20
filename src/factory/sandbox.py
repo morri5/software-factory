@@ -1,4 +1,4 @@
-"""HTTP client for the session API of `sandboxed-agents-lab` (`make api` there).
+"""HTTP client for the session API of `sandboxed-agents` (`make api` there).
 
 One session per issue, on the `claude_factory` harness. Each stage is one message
 with `fresh_context`, so every stage agent starts with a clean context in the same

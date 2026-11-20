@@ -8,7 +8,7 @@ The work happens in a microVM, the orchestration on the host.
 
 | Where | What runs there | What it can reach |
 | --- | --- | --- |
-| VM (`claude_factory` harness of sandboxed-agents-lab) | The Claude Agent SDK running the stage command and its subagents, the repo's `make check test` | DeepSeek's API, nothing else. The API key is swapped in by the host's proxy, so the VM never sees it |
+| VM (`claude_factory` harness of sandboxed-agents) | The Claude Agent SDK running the stage command and its subagents, the repo's `make check test` | DeepSeek's API, nothing else. The API key is swapped in by the host's proxy, so the VM never sees it |
 | Host (this repo) | The LangGraph thread, the approval, SQLite, Langfuse, `gh`, the commit and the push | GitHub through the logged-in `gh`, the session API |
 
 The split follows from who must hold what. The agent reads untrusted issue text and runs code, so it gets the smallest reach that still lets it work: a model endpoint and a working tree. Every action with an effect outside the VM (a comment, a label, a branch, a PR) is taken by host code that does not interpret the agent's output beyond one JSON line and a few file paths.

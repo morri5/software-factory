@@ -1,7 +1,7 @@
 """`factory run --issue N` (one issue, in the foreground), `factory watch` (the loop) and
 `factory report` (`docs/runs.md` from the factory's record).
 
-Both talk to a running session API (`make -C ../sandboxed-agents-lab api`); the
+Both talk to a running session API (`make -C ../sandboxed-agents api`); the
 factory never starts its own, since only one API process may run per database.
 """
 

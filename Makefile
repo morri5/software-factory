@@ -17,7 +17,7 @@ test:
 check-names:
 	./scripts/check_names.sh
 
-# Both need the session API of ../sandboxed-agents-lab running (`make api` there).
+# Both need the session API of ../sandboxed-agents running (`make api` there).
 watch:
 	uv run factory watch
 

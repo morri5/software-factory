@@ -1,5 +1,5 @@
 [project]
-name = "multi-agent-lab"
+name = "software-factory"
 version = "0.1.0"
 description = "A personal software factory: GitHub issues to pull requests through sandboxed coding agents, measured"
 readme = "README.md"
