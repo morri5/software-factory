@@ -16,7 +16,7 @@ from uuid import UUID
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
-from factory import config, github, graph, report, sandbox, store
+from factory import config, github, graph, memory, report, sandbox, store
 
 log = logging.getLogger("factory")
 
@@ -25,7 +25,8 @@ async def run_issue(number: int, decision: github.Decision | None = None) -> dic
     """Run the issue's graph until it ends or waits for approval.
 
     Without a decision the issue starts over; with one, its thread resumes at the
-    approval. At the end the issue's sandbox session is closed.
+    approval. Afterwards the saved stage documents are backed up; at the end the issue's
+    sandbox session is closed.
     """
     db = store.connect()
     config.VAR_DIR.mkdir(parents=True, exist_ok=True)
@@ -41,7 +42,10 @@ async def run_issue(number: int, decision: github.Decision | None = None) -> dic
             if (await app.aget_state(thread)).next != ("approve",):
                 raise RuntimeError(f"issue #{number} has no thread waiting for approval")
             start = Command(resume=decision)
-        state: dict[str, Any] = await app.ainvoke(start, thread)
+        try:
+            state: dict[str, Any] = await app.ainvoke(start, thread)
+        finally:
+            memory.backup(number)  # also a run that waits, or crashes, keeps what it saved
         if not (await app.aget_state(thread)).next:  # reached END
             if state.get("session_id"):
                 await sandbox.close_session(UUID(state["session_id"]))

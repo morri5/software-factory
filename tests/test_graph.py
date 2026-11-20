@@ -1,13 +1,19 @@
+import sqlite3
+import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
-from factory import graph
+from factory import config, graph, sandbox, stages, store, tracing
 from factory.github import Decision
 from factory.graph import IssueState, fence_frontmatter
+from factory.sandbox import StageRun
+from factory.stages import Stage
 
 
 def test_frontmatter_becomes_a_yaml_block() -> None:
@@ -116,3 +122,78 @@ async def test_a_failed_stage_ends_before_the_approval(
         await app.ainvoke({"issue": 2, "title": "t", "body": "b"}, THREAD)
         assert not (await app.aget_state(THREAD)).next
     assert calls == ["research"]
+
+
+def stage_run(answer: str) -> StageRun:
+    return StageRun(
+        session_id=UUID(int=1), run_id="r", status="ok", reason=None, agent_message=answer,
+        usage={}, cost_usd=0.0, tool_calls=0, subagent_tool_calls=0, num_turns=1, wall_s=1.0,
+        started_at=None, ended_at=None, patch=b"", base_commit=None, agents_sha=None,
+    )  # fmt: skip
+
+
+@pytest.fixture
+def stubbed_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Callable[[Stage, str, dict[str, str]], Awaitable[None]]:
+    """`run_stage` with the session, the clone, the record and the trace stubbed; the
+    thoughts repo is a temp dir."""
+    monkeypatch.setattr(config, "THOUGHTS_DIR", tmp_path / "thoughts")
+    monkeypatch.setattr(stages, "build_message", lambda stage, args: ("text", "sha"))
+    monkeypatch.setattr(store, "record_stage_run", lambda *a: None)
+    monkeypatch.setattr(tracing, "stage_run", lambda *a: None)
+
+    async def run(stage: Stage, answer: str, files: dict[str, str]) -> None:
+        async def fake_run(*a: object) -> StageRun:
+            return stage_run(answer)
+
+        def fake_materialize(*a: object) -> Path:
+            tree = Path(tempfile.mkdtemp(dir=tmp_path)) / "repo"
+            for rel, text in files.items():
+                (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+                (tree / rel).write_text(text)
+            return tree
+
+        monkeypatch.setattr(sandbox, "run_stage", fake_run)
+        monkeypatch.setattr(graph, "materialize", fake_materialize)
+        await graph.run_stage(sqlite3.connect(":memory:"), 5, stage, UUID(int=1), "args")
+
+    return run
+
+
+def saved(tmp_path: Path) -> dict[str, str]:
+    root = tmp_path / "thoughts" / "repos" / "factory-playground" / "shared" / "factory"
+    return {str(p.relative_to(root)): p.read_text() for p in root.rglob("*") if p.is_file()}
+
+
+async def test_an_ok_research_saves_its_document(
+    tmp_path: Path, stubbed_stage: Callable[[Stage, str, dict[str, str]], Awaitable[None]]
+) -> None:
+    doc = "thoughts/shared/research/2026-11-20-x.md"
+    answer = f'FACTORY_RESULT: {{"status": "ok", "artifact": "{doc}", "summary": "s"}}'
+    await stubbed_stage("research", answer, {doc: "# Research\n"})
+    assert saved(tmp_path) == {"research/2026-11-20-x.md": "# Research\n"}
+
+
+async def test_a_failed_validation_saves_its_report(
+    tmp_path: Path, stubbed_stage: Callable[[Stage, str, dict[str, str]], Awaitable[None]]
+) -> None:
+    doc = "/lab/repo/thoughts/shared/validation/v.md"
+    answer = (
+        f'FACTORY_RESULT: {{"status": "fail", "artifact": "{doc}", "summary": "s", '
+        '"tests_exit_code": 2}'
+    )
+    with pytest.raises(graph.StageFailed) as failed:
+        await stubbed_stage("validate", answer, {doc[len("/lab/repo/") :]: "# Failed\n"})
+    assert failed.value.reason == "agent_reported_fail"
+    assert saved(tmp_path) == {"validation/v.md": "# Failed\n"}
+
+
+async def test_a_stage_without_a_document_saves_nothing(
+    tmp_path: Path, stubbed_stage: Callable[[Stage, str, dict[str, str]], Awaitable[None]]
+) -> None:
+    answer = 'FACTORY_RESULT: {"status": "ok", "artifact": null, "summary": "s"}'
+    with pytest.raises(graph.StageFailed) as failed:
+        await stubbed_stage("plan", answer, {})
+    assert failed.value.reason == "no_artifact"
+    assert saved(tmp_path) == {}

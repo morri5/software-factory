@@ -22,7 +22,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from factory import config, github, pr, sandbox, stages, store, tracing
+from factory import config, github, memory, pr, sandbox, stages, store, tracing
 from factory.sandbox import StageRun
 from factory.stages import FactoryResult, NoResult, Stage
 from factory.workspace import ArtifactError, materialize, read_artifact
@@ -152,6 +152,8 @@ async def run_stage(
             missing = str(exc)
         finally:
             shutil.rmtree(tree.parent)
+    if result.artifact and document is not None:
+        memory.save(memory.FOLDERS[stage], result.artifact, document)
     if result.status != "ok":
         raise fail("agent_reported_fail", result.summary, result.artifact, document)
     if stage == "validate" and not stages.validation_passed(result):
