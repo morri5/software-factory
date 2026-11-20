@@ -35,7 +35,7 @@ The Claude Agent SDK loads every settings source when `setting_sources` is not p
 What does cross into the VM is chosen on the host:
 
 - the command file's body, as the text of the message;
-- the agent files from `LAB_FACTORY_AGENTS_DIR`, as programmatic subagent definitions (description, tools, model, prompt), hashed into `agents_sha`.
+- the agent files from `FACTORY_AGENTS_DIR`, as programmatic subagent definitions (description, tools, model, prompt), hashed into `agents_sha`.
 
 A personal `CLAUDE.md` stays out on purpose. It holds personal context, and everything in the VM's prompt goes to the model provider.
 

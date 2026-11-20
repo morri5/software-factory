@@ -15,6 +15,7 @@ Small, well-specified work that you would rather review than do: a bug with a cl
 - **It works like a careful engineer, in three steps: Research, Plan, Implement (RPI).** First it reads the code the issue touches and writes down how it works today. Then it writes a plan from that research. Only after a human approves the plan does it write code, and then a separate step checks the result against the plan and runs the tests. Splitting the work this way is what keeps a cheap model on track: each step starts with a clean head and a document from the step before.
 - **It works in a sandbox.** Each issue gets its own microVM with a copy of the repo. The agent can run anything in there, but it has no GitHub access and no keys, and nothing leaves the VM except one patch file. If it goes wrong, you throw the VM away.
 - **It lives in GitHub.** No new UI: the issue is the ticket, the research and plan arrive as comments, your approval is a comment, the result is a pull request, and labels show where each issue is.
+- **It remembers.** Every research, plan and validation report is saved to a [HumanLayer thoughts](https://github.com/humanlayer/humanlayer/blob/main/hlyr/THOUGHTS.md) repository, under `repos/<repo>/shared/factory/`, and committed and pushed after each run. Over time that folder becomes the repo's memory: what was investigated, what was decided and why, and what passed validation, one document per issue and stage.
 - **It measures everything.** Cost, tokens, tool calls and time per step land in SQLite, in a Langfuse trace, and in the PR description.
 
 ```mermaid
@@ -25,6 +26,9 @@ flowchart LR
     A --> IM["Implement"]
     IM --> V["Validate<br/>(tests)"]
     V --> PR["Pull request<br/>green CI"]
+    R -.-> T[("thoughts repo<br/>research, plans, validation")]
+    P -.-> T
+    V -.-> T
     subgraph VM["inside a sandbox microVM"]
         R
         P
@@ -45,7 +49,9 @@ flowchart LR
         G --> M[(var/factory.db<br/>stage metrics)]
         G --> PR[pr.py<br/>apply patch, push, gh pr create]
         G -.-> LF[Langfuse<br/>span per stage]
+        G --> MEM[memory.py<br/>save stage docs, back up]
     end
+    MEM --> TH[("thoughts repo<br/>repos/REPO/shared/factory/")]
     GH[(GitHub: issues, comments,<br/>labels, PRs)] <-->|gh CLI| W
     GH <--> PR
     ST -->|"HTTP: POST /messages<br/>{text, fresh_context, limits}"| API
@@ -57,7 +63,7 @@ flowchart LR
     ST -->|"GET /events"| LOG
 ```
 
-The host orchestrates and the VM works. One sandbox session holds the issue's VM and working tree from research to validate; every stage is one message with `fresh_context`, so each stage agent starts with a clean context on the tree the previous stage left. The stage documents (research, plan, validation report) and the code change leave the VM in one place: the session's saved workspace patch. The host reads the documents from it, posts them on the issue, and turns the code part into the PR. The VM never holds a GitHub credential. The reasons behind this split are in [docs/design-notes.md](docs/design-notes.md).
+The host orchestrates and the VM works. One sandbox session holds the issue's VM and working tree from research to validate; every stage is one message with `fresh_context`, so each stage agent starts with a clean context on the tree the previous stage left. The stage documents (research, plan, validation report) and the code change leave the VM in one place: the session's saved workspace patch. The host reads the documents from it, posts them on the issue, saves them to the thoughts repo, and turns the code part into the PR. The VM never holds a GitHub credential. The reasons behind this split are in [docs/design-notes.md](docs/design-notes.md).
 
 ## The graph
 
@@ -66,13 +72,13 @@ One LangGraph thread per issue (`thread_id = issue-<n>`), checkpointed in `var/c
 ```mermaid
 flowchart TD
     START([issue labelled factory]) --> research
-    research["research<br/>open the sandbox session,<br/>run research_codebase,<br/>comment the research doc"] -->|ok| plan
-    plan["plan<br/>run create_plan on the research doc,<br/>comment the plan with approval help"] -->|ok| approve
+    research["research<br/>open the sandbox session,<br/>run research_codebase,<br/>comment and save the research doc"] -->|ok| plan
+    plan["plan<br/>run create_plan on the research doc,<br/>comment and save the plan<br/>with approval help"] -->|ok| approve
     approve{{"approve<br/>interrupt(): wait for /approve or /reject<br/>by the approver, after the plan comment"}}
     approve -->|/approve| implement
     approve -->|/reject reason| rejected["rejected<br/>comment the reason,<br/>label factory:rejected"]
     implement["implement<br/>run implement_plan,<br/>all phases, no pauses"] -->|ok| validate
-    validate["validate<br/>run validate_plan in a fresh context;<br/>passes only with status ok<br/>and tests_exit_code 0"] -->|ok| open_pr
+    validate["validate<br/>run validate_plan in a fresh context;<br/>passes only with status ok<br/>and tests_exit_code 0;<br/>save the report"] -->|ok| open_pr
     open_pr["open_pr<br/>patch minus thoughts/, commit,<br/>push factory/issue-n, gh pr create,<br/>comment PR link and metrics"] --> END([END: session closed])
     rejected --> END
     research -->|fail| FAILED([END: factory:failed<br/>comment with reason and session])
@@ -84,6 +90,7 @@ flowchart TD
 
 - **Stage nodes** (`research`, `plan`, `implement`, `validate`) send the command file's body, prefixed with a headless contract, as one message to the session API. They parse the `FACTORY_RESULT` line at the end of the agent's answer, read the stage document out of the workspace patch, record the run in SQLite and Langfuse, and report on the issue. A failed run, a missing or invalid `FACTORY_RESULT` line, an agent that reports `fail`, or a missing document sends the graph to `END` with `factory:failed` and a comment naming the reason and the sandbox session.
 - **`approve`** calls `interrupt()` and has no side effects, since it re-runs on resume. `factory watch` polls the issue's comments; when the approver answers, it resumes the thread with `Command(resume=decision)`. The checkpoint keeps the thread across restarts and days of waiting, and a resume never re-runs research or plan.
+- **Memory.** Each stage saves its document to `<thoughts>/repos/<repo>/shared/factory/{research,plans,validation}/` as soon as it is read, even when the stage fails, so a failed validation report is kept too. When the issue's invocation ends, however it ends, `memory.backup` commits that folder alone as `factory` and pushes it. Other changes in the thoughts repo stay untouched, and the repo's git hooks are skipped so a sync hook cannot sweep them in. A failed push only logs a warning; the commit goes out with the next push or sync.
 - **`open_pr`** refuses an empty diff (nothing was implemented) and one that touches `.github/` (workflow changes need a human). Any unexpected error in any node (the session API gone, a push refused) is caught by the CLI, which labels the issue `factory:failed`, comments the error and closes the session.
 
 ## Labels
@@ -111,7 +118,8 @@ You also need your own Claude Code command files (`research_codebase.md`, `creat
 1. Start the session API in the sandbox lab, with the subagent definitions it should load:
 
    ```
-   LAB_FACTORY_AGENTS_DIR=~/.claude/agents make -C ../sandboxed-agents api
+   echo 'FACTORY_AGENTS_DIR=~/.claude/agents' >> ../sandboxed-agents/.env
+   make -C ../sandboxed-agents api
    ```
 
    Only the agent files (as subagent definitions) and the command files (as message text) cross into the VM. Your `CLAUDE.md` and settings never do: the model provider would receive them.
@@ -127,7 +135,7 @@ You also need your own Claude Code command files (`research_codebase.md`, `creat
 ## Quick start
 
 ```
-make -C ../sandboxed-agents api    # in one terminal (with LAB_FACTORY_AGENTS_DIR, see above)
+make -C ../sandboxed-agents api    # in one terminal (with FACTORY_AGENTS_DIR, see above)
 make watch                             # in another
 ```
 
@@ -141,6 +149,7 @@ Then label an issue `factory`, wait for the plan comment, and answer it with `/a
 | `FACTORY_REPO` | `morri5/factory-playground` | The target repository (public: the model provider sees its code) |
 | `FACTORY_APPROVER` | `morri5` | The only GitHub login whose `/approve` or `/reject` counts |
 | `FACTORY_COMMANDS_DIR` | `~/.claude/commands` | Where `research_codebase.md` and the other command files live |
+| `FACTORY_THOUGHTS_DIR` | `~/GitHub/thoughts` | The thoughts repository where stage documents are saved and pushed |
 | `FACTORY_POLL_S` | `60` | Seconds between two `watch` ticks |
 | `FACTORY_VAR_DIR` | `var` | Where `factory.db` and `checkpoints.db` live |
 | `FACTORY_<STAGE>_MAX_TOOL_CALLS`, `_RUN_TIMEOUT_S`, `_MAX_USD` | see `src/factory/config.py` | Per-stage run limits, sent with each stage's message |
@@ -170,7 +179,7 @@ Each issue run is one trace in Langfuse, with one generation per stage (usage, c
 ## Limitations
 
 - **Runs on DeepSeek through an unofficial path.** The Claude Agent SDK talks to DeepSeek's Anthropic-compatible endpoint. It works for every run here, but neither vendor officially supports the combination, so an update on either side can break it. One symptom already: the SDK's usage figures leave out the subagents, so the runner reads them from the CLI's transcripts.
-- **The commands and agents are not included.** The stages run my own versions of the `research_codebase`, `create_plan`, `implement_plan` and `validate_plan` commands and the subagents they spawn. They started from the ones HumanLayer published in [humanlayer/humanlayer at `77c7fe99`](https://github.com/humanlayer/humanlayer/tree/77c7fe99/.claude/commands) (Apache 2.0) and have since been modified for my own use, and they stay private. To run the factory, point `FACTORY_COMMANDS_DIR` and `LAB_FACTORY_AGENTS_DIR` at your own command and agent files with those names.
+- **The commands and agents are not included.** The stages run my own versions of the `research_codebase`, `create_plan`, `implement_plan` and `validate_plan` commands and the subagents they spawn. They started from the ones HumanLayer published in [humanlayer/humanlayer at `77c7fe99`](https://github.com/humanlayer/humanlayer/tree/77c7fe99/.claude/commands) (Apache 2.0) and have since been modified for my own use, and they stay private. To run the factory, point `FACTORY_COMMANDS_DIR` and `FACTORY_AGENTS_DIR` at your own command and agent files with those names.
 - **Public repositories only.** The model provider receives the code.
 - **Stdlib-only target.** The VM can reach the model provider and nothing else, so it cannot install packages; validate can only run tests that need nothing beyond the standard library.
 - **No revision loop.** `/reject <reason>` ends the run; a failed validate ends it too. Re-running an issue starts over at research.
