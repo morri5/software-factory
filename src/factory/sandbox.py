@@ -52,9 +52,9 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=config.API_URL, timeout=30)
 
 
-async def create_session(repo_url: str) -> UUID:
+async def create_session(repo_url: str, seed_files: dict[str, str]) -> UUID:
     async with _client() as client:
-        body = {"repo_url": repo_url, "harness": HARNESS}
+        body = {"repo_url": repo_url, "harness": HARNESS, "seed_files": seed_files}
         r = (await client.post("/sessions", json=body)).raise_for_status()
         return UUID(r.json()["session_id"])
 

@@ -27,11 +27,13 @@ class FakeApi:
     def __init__(self, log: list[dict[str, Any]]) -> None:
         self.log = copy.deepcopy(log)
         self.messages: list[dict[str, Any]] = []
+        self.sessions: list[dict[str, Any]] = []
         self.polls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if request.method == "POST" and path == "/sessions":
+            self.sessions.append(json.loads(request.content))
             return httpx.Response(201, json={"session_id": str(SESSION)})
         if request.method == "POST" and path.endswith("/messages"):
             body = json.loads(request.content)
@@ -133,6 +135,10 @@ async def test_a_failed_provisioning_is_a_failed_run_without_patch(api: Any) -> 
 
 
 async def test_create_and_close(api: Any) -> None:
-    api(RECORDED)
-    assert await sandbox.create_session("https://github.com/o/r.git") == SESSION
+    fake = api(RECORDED)
+    seed = {"thoughts/shared/factory/research/r.md": "# Research\n"}
+    assert await sandbox.create_session("https://github.com/o/r.git", seed) == SESSION
+    assert fake.sessions == [
+        {"repo_url": "https://github.com/o/r.git", "harness": "claude_factory", "seed_files": seed}
+    ]
     await sandbox.close_session(SESSION)  # 409: already closed is fine

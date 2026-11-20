@@ -2,6 +2,7 @@
 
 Each stage document is saved under `repos/<target-repo>/shared/factory/<folder>/`
 of the thoughts repo, and that path alone is committed and pushed after each run.
+New sessions of an allowlisted repo get these documents as seed files.
 """
 
 import contextlib
@@ -29,6 +30,21 @@ def save(folder: str, vm_path: str, document: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(document)
     return path
+
+
+SEED_DIR = "thoughts/shared/factory"
+
+
+def seed_files(repo: str) -> dict[str, str]:
+    """The repo's saved documents as VM paths, for repos in `FACTORY_SEED_REPOS` only."""
+    if repo not in config.SEED_REPOS:
+        return {}
+    docs = config.factory_docs(repo)
+    return {
+        f"{SEED_DIR}/{path.parent.name}/{path.name}": path.read_text()
+        for folder in sorted(set(FOLDERS.values()))
+        for path in sorted((docs / folder).glob("*.md"))
+    }
 
 
 def _pull_rebase(root: Path) -> None:

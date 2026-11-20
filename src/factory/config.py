@@ -21,6 +21,8 @@ COMMANDS_DIR = Path(os.environ.get("FACTORY_COMMANDS_DIR", "~/.claude/commands")
 POLL_S = int(os.environ.get("FACTORY_POLL_S", "60"))
 VAR_DIR = Path(os.environ.get("FACTORY_VAR_DIR", "var"))
 THOUGHTS_DIR = Path(os.environ.get("FACTORY_THOUGHTS_DIR", "~/GitHub/thoughts")).expanduser()
+# Repos whose earlier stage documents are seeded into new sessions (comma-separated).
+SEED_REPOS = {r for r in os.environ.get("FACTORY_SEED_REPOS", "").split(",") if r}
 # Langfuse from compose.yaml (`make langfuse-up`); its headless init creates these keys.
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "http://localhost:3100")
 LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "pk-lf-factory")

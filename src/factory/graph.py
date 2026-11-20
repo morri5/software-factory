@@ -179,7 +179,7 @@ async def research(state: IssueState) -> dict[str, Any]:
     n = state["issue"]
     db = store.connect()
     github.set_status(n, "research")
-    session_id = await sandbox.create_session(config.repo_url())
+    session_id = await sandbox.create_session(config.repo_url(), memory.seed_files(config.REPO))
     store.update_issue(db, n, session_id=str(session_id), state="research")
     args = stages.research_args(n, state["title"], state["body"])
     try:

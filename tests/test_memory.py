@@ -92,3 +92,21 @@ def test_backup_skips_the_repo_hooks(thoughts: Path) -> None:
         "docs: factory documents for factory-playground#7"
     )
     assert git("status", "--short", cwd=thoughts).splitlines() == [" M notes.md", "M  other.md"]
+
+
+def test_seed_files_only_for_allowlisted_repos(
+    thoughts: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory.save("research", "r.md", "# Research\n")
+    memory.save("plans", "p.md", "# Plan\n")
+    memory.save("validation", "v.md", "# Validation\n")
+    (thoughts / DOCS / "plans" / "notes.txt").write_text("not a document\n")
+    monkeypatch.setattr(config, "SEED_REPOS", set())
+    assert memory.seed_files("morri5/factory-playground") == {}
+    monkeypatch.setattr(config, "SEED_REPOS", {"morri5/factory-playground"})
+    assert memory.seed_files("morri5/factory-playground") == {
+        "thoughts/shared/factory/plans/p.md": "# Plan\n",
+        "thoughts/shared/factory/research/r.md": "# Research\n",
+        "thoughts/shared/factory/validation/v.md": "# Validation\n",
+    }
+    assert memory.seed_files("morri5/other") == {}  # not allowlisted, no folder either
