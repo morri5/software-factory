@@ -146,3 +146,8 @@ def test_validate_result_line_asks_for_the_exit_code() -> None:
     line = stages.contract("validate").splitlines()[-1]
     assert line.startswith("FACTORY_RESULT:") and '"tests_exit_code":' in line
     assert '"tests_exit_code"' not in stages.contract("research")
+
+
+def test_contract_fixes_the_document_names(commands: Path) -> None:
+    text, _ = build_message("research", "the args")
+    assert "`YYYY-MM-DD-issue-<n>-<description>.md`" in text
