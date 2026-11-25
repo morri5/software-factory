@@ -1,13 +1,15 @@
 # Self-hosted Langfuse v4 for the factory's traces (`make langfuse-up`, `make langfuse-down`).
 # Adapted from the official docker-compose.yml (github.com/langfuse/langfuse, main, 2026-11-20):
-# no AI gateway, optional settings left at their defaults, telemetry off, and only the web UI
-# published, on 127.0.0.1:3100, so nothing clashes with other local services.
-# The secrets below are lab-only: everything listens on localhost.
+# optional settings left at their defaults, telemetry off, and only the web UI (127.0.0.1:3100)
+# and the AI gateway (127.0.0.1:3031) published, so nothing clashes with other local services.
+# The secrets written here are lab-only: everything listens on localhost. The real ones
+# (LANGFUSE_ENCRYPTION_KEY and the gateway keys) come from the gitignored .env.
+# Web, worker and gateway must run the same release (4.75.0 or newer for the gateway).
 name: factory-langfuse
 
 services:
   langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:${LANGFUSE_IMAGE_TAG:-4}
+    image: docker.langfuse.com/langfuse/langfuse-worker:${LANGFUSE_IMAGE_TAG:-4.86.0}
     restart: always
     depends_on: &langfuse-depends-on
       postgres:
@@ -22,7 +24,8 @@ services:
       NEXTAUTH_URL: http://localhost:3100
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
       SALT: factory-lab-salt
-      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      # Encrypts the provider keys of the gateway's connections; changing it makes them unreadable.
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env (openssl rand -hex 32)}
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
       CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
@@ -52,7 +55,7 @@ services:
       REDIS_TLS_ENABLED: "false"
 
   langfuse-web:
-    image: docker.langfuse.com/langfuse/langfuse:${LANGFUSE_IMAGE_TAG:-4}
+    image: docker.langfuse.com/langfuse/langfuse:${LANGFUSE_IMAGE_TAG:-4.86.0}
     restart: always
     depends_on: *langfuse-depends-on
     ports:
@@ -71,6 +74,10 @@ services:
       LANGFUSE_INIT_USER_EMAIL: admin@factory.local
       LANGFUSE_INIT_USER_NAME: admin
       LANGFUSE_INIT_USER_PASSWORD: factory-lab-password
+      # AI gateway: on once both keys are set (see .env.example).
+      LANGFUSE_AI_GATEWAY_SERVICE_KEY: ${LANGFUSE_AI_GATEWAY_SERVICE_KEY:-}
+      LANGFUSE_AI_GATEWAY_JWT_PRIVATE_KEY: ${LANGFUSE_AI_GATEWAY_JWT_PRIVATE_KEY:-}
+      LANGFUSE_AI_GATEWAY_PUBLIC_URL: http://localhost:3031
     healthcheck:
       # The server listens on the container's hostname only, and the image has no `hostname`.
       test: ["CMD", "node", "-e", "fetch('http://' + require('os').hostname() + ':3000/api/public/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
@@ -78,6 +85,36 @@ services:
       timeout: 5s
       retries: 60
       start_period: 10s
+
+  langfuse-ai-gateway:
+    image: docker.langfuse.com/langfuse/ai-gateway:${LANGFUSE_IMAGE_TAG:-4.86.0}
+    restart: always
+    depends_on:
+      - langfuse-web
+    ports:
+      # The sandbox VMs reach it as host.microsandbox.internal:3031.
+      - 127.0.0.1:3031:3031
+    environment:
+      # Plain HTTP only on the private Docker network; web's answers carry provider keys.
+      LANGFUSE_AI_GATEWAY_WEB_URL: ${LANGFUSE_AI_GATEWAY_SERVICE_KEY:+http://langfuse-web:3000}
+      LANGFUSE_AI_GATEWAY_ALLOW_HTTP_WEB_URL: "true"
+      LANGFUSE_AI_GATEWAY_LISTEN_ADDRESS: 0.0.0.0:3031
+      # Without the key the gateway starts unconfigured: /ready and inference return 503.
+      LANGFUSE_AI_GATEWAY_SERVICE_KEY: ${LANGFUSE_AI_GATEWAY_SERVICE_KEY:-}
+      LANGFUSE_AI_GATEWAY_ALLOW_MISSING_SERVICE_KEY: "true"
+      LANGFUSE_AI_GATEWAY_CONNECTION_DRAIN_TIMEOUT_SECONDS: "30"
+      LANGFUSE_AI_GATEWAY_TELEMETRY_SHUTDOWN_TIMEOUT_SECONDS: "20"
+      # Counts the spend of keys with a budget; without it, such keys get 503.
+      LANGFUSE_AI_GATEWAY_REDIS_URL: redis://redis:6379
+      LANGFUSE_AI_GATEWAY_REDIS_AUTH: myredissecret
+    stop_grace_period: 60s  # above the drain plus the telemetry flush
+    healthcheck:
+      # Liveness, not /ready: a gateway without keys is unconfigured by design.
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3031/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server:26.3.62.3

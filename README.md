@@ -129,6 +129,7 @@ You also need your own Claude Code command files (`research_codebase.md`, `creat
    ```
    cp .env.example .env    # FACTORY_REPO, FACTORY_APPROVER, FACTORY_COMMANDS_DIR, ...
    uv sync
+   echo "LANGFUSE_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
    make langfuse-up        # UI on http://localhost:3100, login admin@factory.local
    ```
 
@@ -154,6 +155,7 @@ Then label an issue `factory`, wait for the plan comment, and answer it with `/a
 | `FACTORY_VAR_DIR` | `var` | Where `factory.db` and `checkpoints.db` live |
 | `FACTORY_<STAGE>_MAX_TOOL_CALLS`, `_RUN_TIMEOUT_S`, `_MAX_USD` | see `src/factory/config.py` | Per-stage run limits, sent with each stage's message |
 | `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | `http://localhost:3100`, `pk-lf-factory`, `sk-lf-factory` | The local Langfuse from `compose.yaml`, whose headless init creates these keys |
+| `LANGFUSE_ENCRYPTION_KEY`, `LANGFUSE_AI_GATEWAY_SERVICE_KEY`, `LANGFUSE_AI_GATEWAY_JWT_PRIVATE_KEY` | none | Secrets of the local Langfuse, read by `compose.yaml`. The encryption key is required; the experimental AI gateway on `127.0.0.1:3031` runs once both gateway keys are set (see `.env.example`) |
 
 ## Runs
 
